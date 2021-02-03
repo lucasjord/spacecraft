@@ -5,21 +5,28 @@ Script designed to produce a text output file that will allow <ANTENNA> to track
 
 This requires at least one input file in directory called {antenna.input}. Format of 
 {antenna.input} is 
-!   NAME----  LONG------  LAT------  AZR  ELR  
-    HOBART26  147.44052E  42.80358S   40   40
+!   NAME----  LONG------  LAT------  Z---  AZR  ELR
+    HOBART26  +147.44052  -42.80358    65   40   40 
 
-Where columns are [1] 6char antenna name; [2] antenna longtitude (deg) to 5dp inc direction E|W;
-[3] antenna latitude (deg) to 5dp inc direction N|S; [4] azimuthal max slew rate (deg/min);
-[5] antenna elevation max slew rate (deg/min)
+Where columns are [1] 6char antenna name; [2] antenna longtitude (deg) to 5dp inc east direction;
+[3] antenna latitude (deg) to 5dp inc direction N|S; [4] height in m above sea level, [5] azimuthal 
+max slew rate (deg/min); [6] antenna elevation max slew rate (deg/min)
 
-Other arguments are:
+Other ideas I have is adding:
 
+Plotting
+Beam size considerations
+Transmission frequency of satellites
+Slew rate considerations vs. satellite speed (e.g. ISS)
+
+Lucas Jordan Hyland
+
+2020/02/03
 
 '''
 
-##########################################################################################
-import datetime, os, sys, argparse
-import numpy as np
+###################################################################################################
+import datetime, os, sys, argparse, numpy as np
 import matplotlib.pyplot as plt, matplotlib.dates as dates
 from matplotlib import rc
 from astropy import time as astrot, units as u
@@ -29,7 +36,7 @@ from skyfield.api import Topos, load, EarthSatellite
 rc('font',**{'family':'serif','serif':['Computer Modern Roman']})
 rc('text', usetex=True)
 
-##########################################################################################
+###################################################################################################
 
 def main():
     parser = argparse.ArgumentParser()
@@ -72,7 +79,7 @@ def main():
 
     # first want to load TLEs. If an input file is given, use that. Else look for default TLEs.
     if args.file!=None: satellite_tles = load.tle(args.file)
-    else:               satellite_tles = _get_satellite_file()
+    else:               satellite_tles = _download_satellite_file()
     # check if satellite id/name given, else print all UP at given time
     if args.satellite=="0": 
         _which_satellite_up(args,ant_,satellite_tles)  
@@ -84,42 +91,55 @@ def main():
     # turn track into time, az, el
     el = track[0].degrees
     az = track[1].degrees
+    d  = track[2].km
     az[az>180]  = az[az>180]-360
     az[az<=-180]= az[az<=-180]+360
     az_l = az[el>args.limit]
     el_l = el[el>args.limit]
     t_mjd = t_r.mjd[el>args.limit]
     t_jd  = t_r.jd[el>args.limit]
+    rng   = d[el>args.limit]
     # now I want to print out this information into 2 files, HMI format and sattrack format
+    # delete old files
+    if os.path.exists("{0:s}.hmi".format(args.outfile)):
+        os.remove("{0:s}.hmi".format(args.outfile))
+    if os.path.exists("{0:s}.sattrak".format(args.outfile)):
+        os.remove("{0:s}.sattrak".format(args.outfile))
     #HMI first
     #-862789 091840  0       57513   22604294
     with open("{0:s}.hmi".format(args.outfile), "a") as f:
         print(len(az_l),file=f)
         for i in range(len(az_l)):
-            print('{0:<+08.0f} {1:07.0f}  0       {2:5.0f}   {3:8.0f}'.format(az_l[i]*10000,el_l[i]*10000,int(t_mjd[i]),24*60*60*1000*( t_mjd[i] % int(t_mjd[i])) ),file=f)
+            print('{0:<+08.0f} {1:07.0f}  {4:20.2f}       {2:5.0f}   {3:8.0f}'.format(az_l[i]*10000,
+                el_l[i]*10000,int(t_mjd[i]),
+                24*60*60*1000*( t_mjd[i] % int(t_mjd[i])),rng[i]),file=f)
 
     #printing sattrak output
     #JD : 2455352.32379623 ; Az : -83.882 ; El : 13.300 ; Rn :    0.0
     with open("{0:s}.sattrak".format(args.outfile), "a") as f:
         for i in range(len(az_l)):
-            print('JD : {0:16.8f} ; Az :{1:>+8.3f} ; El : {2:6.3f} ; Rn :    0.0'.format(t_jd[i],az_l[i],el_l[i]),file=f)
+            print('JD : {0:16.8f} ; Az :{1:>+8.3f} ; El : {2:6.3f} ; Rn :{3:10.2f}'.format(t_jd[i],
+                az_l[i],el_l[i],rng[i]),file=f)
 
+###################################################################################################
 
-def _get_satellite_file():
+def _download_satellite_file():
     url     = 'http://celestrak.com/NORAD/elements'
-    satfiles= ['gps-ops.txt','gnss.txt']
+    satfiles= ['gps-ops.txt','gnss.txt','weather.txt']
     infile  = 'satellites.input'
     '''
     Check if satellite input file already exists, if not check if downloadable 
     satellite file exists. If not download and append
     '''
-    if not os.path.exists(infile):
-        for sfile in satfiles:
-            if not os.path.exists(sfile):
-                os.popen('wget --output-document={1:s} {0:s}/{1:s}'.format(url,sfile))
-                os.system('cat {0:s} >> {1:s}'.format(sfile,infile))
-            else:
-                os.system('cat {0:s} >> {1:s}'.format(sfile,infile))
+    if os.path.exists(infile):
+        os.remove(infile)
+    os.system('touch {0:}'.format(infile))
+    for sfile in satfiles:
+        if not os.path.exists(sfile):
+            os.popen('wget --output-document={1:s} {0:s}/{1:s}'.format(url,sfile))
+            os.system('cat {0:s} >> {1:s}'.format(sfile,infile))
+        else:
+            os.system('cat {0:s} >> {1:s}'.format(sfile,infile))
     return load.tle(infile)
 
 def _match_satellite(args,satellite_tles):
@@ -228,14 +248,17 @@ def _which_satellite_up(args,antenna,satellites):
         if az2>az1: rate='R'
         elif az2<az1: rate='S'
         if topo_t[0].degrees<args.limit:continue
-        print('{0:<20s} {1:>8.0f} {2:>10.2f} {3:>10s}'.format(satellites[sat].name,sat,topo_t[0].degrees,rate))
+        #print(sat)
+        print('{0:<30s} {1:>8.0f} {2:>10.2f} {3:>10s}'.format(satellites[sat].name,
+            int(sat),topo_t[0].degrees,rate))
     sys.exit()
 
+###################################################################################################
 
 if __name__=='__main__':
     main()
 
-
+###################################################################################################
 
 
 
